@@ -24,8 +24,7 @@
                   (start-mmapd! test node))
 
           (teardown! [_ test node]
-                  (info node "tearing down mmapd")
-                  (c/exec :killall :-9 :mmapd))))
+                  (info node "tearing down mmapd"))))
 
 (defn mmapd-test
     [version]
