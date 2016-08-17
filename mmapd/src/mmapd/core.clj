@@ -5,6 +5,14 @@
                                                [tests :as tests]]
                           [jepsen.os.debian :as debian]))
 
+(def binary "/usr/bin/mmapd")
+
+(defn start-mmapd!
+          [test node]
+          (info node "starting mmapd")
+          (c/exec :start-stop-daemon :--start
+                  :--background
+                  :--exec binary))
 
 (defn db
     "mmapd for a particular version."
@@ -12,7 +20,8 @@
     (reify db/DB
           (setup! [_ test node]
                   (info node "installing mmapd" version)
-                  (c/exec :wget :-O "/tmp/mmapd" "https://s3.amazonaws.com/mmapd-bin/mmapd"))
+                  (c/exec :wget :-O binary "https://s3.amazonaws.com/mmapd-bin/mmapd")
+                  (start-mmapd! test node))
 
           (teardown! [_ test node]
                   (info node "tearing down mmapd"))))
