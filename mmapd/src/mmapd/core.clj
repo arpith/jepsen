@@ -17,7 +17,7 @@
           (teardown! [_ test node]
                   (info node "tearing down ZK"))))
 
-(defn zk-test
+(defn mmapd-test
     [version]
     (assoc tests/noop-test
                     :os debian/os
