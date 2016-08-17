@@ -7,15 +7,15 @@
 
 
 (defn db
-    "Zookeeper DB for a particular version."
+    "mmapd for a particular version."
     [version]
     (reify db/DB
           (setup! [_ test node]
-                  (info node "installing ZK" version)
+                  (info node "installing mmapd" version)
                   (c/exec :wget :-O "/tmp/mmapd" "https://s3.amazonaws.com/mmapd-bin/mmapd"))
 
           (teardown! [_ test node]
-                  (info node "tearing down ZK"))))
+                  (info node "tearing down mmapd"))))
 
 (defn mmapd-test
     [version]

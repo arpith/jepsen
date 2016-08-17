@@ -4,5 +4,5 @@
             [mmapd.core :refer :all]))
 
 (deftest a-test
-  (testing "FIXME, I fail."
+  (testing "running mmapd-test"
     (is (:valid? (:results (jepsen/run! (mmapd-test "3.4.5+dfsg-2")))))))
