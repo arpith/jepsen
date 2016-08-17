@@ -39,11 +39,10 @@
       (c/cd "/opt"
             ; Clean up old dir
             (c/exec :rm :-rf "mongodb")
-            ; Extract and rename
-            (c/exec :tar :xvf file)
-            (c/exec :mv (c/lit "mongodb-linux-*") "mongodb")
-            ; Create data dir
+            ; Create mongodb & data dir
             (c/exec :mkdir :-p "mongodb/data")
+            ; Extract to mongodb
+            (c/exec :tar :xvf file :-C "mongodb" :--strip-components=1)
             ; Permissions
             (c/exec :chown :-R (str username ":" username) "mongodb"))
     (catch RuntimeException e
@@ -87,9 +86,9 @@
 (defn savelog!
   "Saves Mongod log"
   [node]
-  (info node "copying mongod.log file to /root/")
+  (info node "copying mongod.log & stdout.log file to /root/")
   (c/su
-    (c/exec :cp :-f "/opt/mongodb/mongod.log" "/root/")))
+    (c/exec :cp :-f "/opt/mongodb/mongod.log" "/opt/mongodb/stdout.log" "/root/")))
 
 (defn wipe!
   "Shuts down MongoDB and wipes data."
@@ -197,6 +196,9 @@
                        (catch Throwable t
                          (.close conn)
                          (throw t))))
+                   (catch com.mongodb.MongoSocketReadTimeoutException e
+                     (info "Mongo socket read timeout waiting for conn; retrying")
+                     nil)
 ;                   (catch com.mongodb.MongoServerSelectionException e
 ;                     nil))
                     ; Todo: figure out what Mongo 3.x throws when servers
@@ -294,15 +296,23 @@
   [url]
   (reify db/DB
     (setup! [_ test node]
-      (debian/install [:libc++1 :libsnmp30])
-      (doto node
-        (install! url)
-        (configure! test)
-        (start!)
-        (join! test)))
+      (util/timeout 300000
+                    (throw (RuntimeException.
+                             (str "Mongo setup on " node "timed out!")))
+                    (debian/install [:libc++1 :libsnmp30])
+                    (doto node
+                      (install! url)
+                      (configure! test)
+                      (start!)
+                      (join! test))))
 
     (teardown! [_ test node]
-      (wipe! node))))
+      (wipe! node))
+
+    db/LogFiles
+    (log-files [_ test node]
+      ["/opt/mongodb/stdout.log"
+       "/opt/mongodb/mongod.log"])))
 
 (defmacro with-errors
   "Takes an invocation operation, a set of idempotent operation functions which

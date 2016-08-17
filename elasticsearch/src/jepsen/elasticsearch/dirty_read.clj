@@ -1,4 +1,4 @@
-(ns jepsen.crate.dirty-read
+(ns jepsen.elasticsearch.dirty-read
   "Searches for dirty reads."
   (:refer-clojure :exclude [test])
   (:require [jepsen [core         :as jepsen]
@@ -15,114 +15,91 @@
                                                    with-retry]]
                     [os           :as os]]
             [jepsen.os.debian     :as debian]
-            [jepsen.checker.timeline :as timeline]
-            [jepsen.crate         :as c]
+            [jepsen.checker.timeline    :as timeline]
+            [jepsen.elasticsearch.core  :as e]
             [clojure.string       :as str]
             [clojure.set          :as set]
             [clojure.pprint :refer [pprint]]
             [clojure.tools.logging :refer [info warn]]
             [knossos.op           :as op])
-  (:import (io.crate.client CrateClient)
-           (io.crate.action.sql SQLActionException
-                                SQLResponse
-                                SQLRequest)
-           (io.crate.shade.org.elasticsearch.client.transport
+  (:import (org.elasticsearch.action NoShardAvailableActionException)
+           (org.elasticsearch.client.transport
+             TransportClient
              NoNodeAvailableException)))
 
+(def index-name "dirty_read")
+
 (defn client
-  ([] (client nil (atom 0)))
-  ([conn limit]
-   (let [initialized? (promise)]
-    (reify client/Client
-      (setup! [this test node]
-        (let [conn (c/await-client (c/connect node) test)]
-          (when (deliver initialized? true)
-            (c/sql! conn "create table dirty_read (
-                           id integer primary key
-                         ) with (number_of_replicas = \"0-all\")"))
-          (client conn limit)))
-
-      (invoke! [this test op]
-        (timeout (case (:f op)
-                   :refresh 60000
-                   :strong-read 60000
-                   100)
-                 (assoc op :type :info, :error :timeout)
-                 (c/with-errors op
-                   (case (:f op)
-                     ; Read a specific ID
-                     :read (let [v (->> (c/sql! conn "select id from dirty_read
-                                                     where id = ?"
-                                                (:value op))
-                                        :rows
-                                        first
-                                        :id)]
-                             (assoc op :type (if v :ok :fail)))
-
-                     ; Refresh table
-                     :refresh (do (c/sql! conn "refresh table dirty_read")
-                                  (assoc op :type :ok))
-
-                     ; Perform a full read of all IDs
-                     :strong-read
-                     (do (->> (c/sql! conn
-                                      "select id from dirty_read LIMIT ?"
-                                      (+ 100 @limit)) ; who knows
-                              :rows
-                              (map :id)
-                              (into (sorted-set))
-                              (assoc op :type :ok, :value)))
-
-                     ; Add an ID
-                     :write (do (swap! limit inc)
-                                (c/sql! conn
-                                        "insert into dirty_read (id) values (?)"
-                                        (:value op))
-                                (assoc op :type :ok))))))
-
-      (teardown! [this test]
-        (.close conn))))))
-
-(defn es-client
-  "Elasticsearch based client. Wraps an underlying Crate client for some ops.
-  Options:
-
-  :es-ops     Set of operation :f's to put through elasticsearch (instead of
-              crate)"
-  ([opts] (es-client (:es-ops opts) (client) nil))
-  ([es-ops crate es]
-   (assert (set? es-ops))
+  "Elasticsearch based client."
+  ([] (client nil))
+  ([^TransportClient es]
    (reify client/Client
      (setup! [this test node]
-       (let [crate (client/setup! crate test node)
-             es    (c/es-connect node)]
-         (es-client es-ops crate es)))
+       (let [es (e/es-connect node)]
+         (try
+           (-> es
+               (.admin)
+               (.indices)
+               (.prepareCreate index-name)
+               (.execute)
+               (.actionGet)
+               (.isAcknowledged)
+               (info :acked))
+           (catch org.elasticsearch.indices.IndexAlreadyExistsException e))
+         (client es)))
 
      (invoke! [this test op]
-       (if-not (es-ops (:f op))
-         (client/invoke! crate test op)
-
-         (timeout 10000 (assoc op :type :info, :error :timeout)
+       (timeout (case (:f op)
+                  :refresh 120000
+                  :strong-read 60000
+                  100)
+                (assoc op :type :info, :error :timeout)
+                (try
                   (case (:f op)
+                    :refresh
+                    (util/with-retry []
+                      (let [r (-> es
+                                  (.admin)
+                                  (.indices)
+                                  (.prepareRefresh
+                                    (into-array String [index-name]))
+                                  (.get))]
+                        (if (= (.getTotalShards r)
+                               (.getSuccessfulShards r))
+                          (assoc op :type :ok)
+                          (do (info "Refresh failed; not all shards successful."
+                                    :total (.getTotalShards r)
+                                    :success (.getSuccessfulShards r)
+                                    :failed (.getFailedShards r)
+                                    (->> r
+                                         .getShardFailures
+                                         (map (fn [s]
+                                                {:shard-id (.shardId s)
+                                                 :reason (.reason s)
+                                                 :status (.status s)
+                                                 :cause  (.getCause s)}))))
+                              (retry)))))
+
                     :strong-read
-                    (->> (c/es-search es)
+                    (->> (e/es-search es)
                          (map (comp :id :source))
                          (into (sorted-set))
                          (assoc op :type :ok, :value))
 
                     :read
-                    (let [v (-> (c/es-get es "dirty_read" "default" (:value op))
+                    (let [v (-> (e/es-get es index-name "default" (:value op))
                                 :source
                                 :id)]
-                         (assoc op :type (if v :ok :fail)))
+                      (assoc op :type (if v :ok :fail)))
 
                     :write
-                    (do (c/es-index! es "dirty_read" "default"
+                    (do (e/es-index! es index-name "default"
                                      {:id (:value op)})
-                        (assoc op :type :ok))))))
+                        (assoc op :type :ok)))
+                  (catch NoShardAvailableActionException e
+                    (assoc op :type :info, :error :no-shard-available)))))
 
      (teardown! [this test]
-       (client/teardown! crate test)
        (.close es)))))
 
 (defn checker
@@ -213,20 +190,15 @@
 (defn test
   "Options:
 
+  :tarball      - ES tarball URL
   :concurrency  - Number of concurrent clients
-  :es-ops       - Set of operations to perform using an ES client directly
   :time-limit   - Time, in seconds, to run the main body of the test."
   [opts]
   (merge tests/noop-test
-         {:name    (let [o (:es-ops opts)]
-                     (str "crate lost-updates "
-                          (str/join " " [(str "r="  (if (:read o)  "e" "c"))
-                                         (str "w="  (if (:write o) "e" "c"))
-                                         (str "sr=" (if (:strong-read o)
-                                                      "e" "c"))])))
+         {:name    "elasticsearch dirty read"
           :os      debian/os
-          :db      (c/db)
-          :client  (es-client opts)
+          :db      (e/db (:tarball opts))
+          :client  (client)
           :checker (checker/compose
                      {:dirty-read (checker)
                       :perf       (checker/perf)})
