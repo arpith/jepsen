@@ -1,14 +1,12 @@
 # mmapd
-
-A Clojure library designed to ... well, that part is up to you.
+Test mmapd with jepsen.
 
 ## Usage
+### Start Jepsen
+1. `$ git clone github.com/arpith/jepsen && cd jepsen/docker`
+2. `$ .up.sh`
+3. `$ docker exec -it jepsen-control bash`
 
-FIXME
-
-## License
-
-Copyright © 2016 FIXME
-
-Distributed under the Eclipse Public License either version 1.0 or (at
-your option) any later version.
+### Run the test
+1. `cd ../mmapd`
+2. `lein test`
