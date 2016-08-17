@@ -18,7 +18,6 @@
                   (info node "tearing down mmapd"))))
 
 (defn mmapd-test
-    (info node "running mmapd-test" version)
     [version]
     (assoc tests/noop-test
                     :os debian/os
